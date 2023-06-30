@@ -15,6 +15,7 @@
 #include <eigen_conversions/eigen_msg.h>
 
 #include <std_srvs/Empty.h>
+#include <std_msgs/Bool.h>
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <nav_msgs/Odometry.h>
@@ -64,7 +65,8 @@ public:
     globalmap_sub = nh.subscribe("/globalmap", 1, &HdlLocalizationNodelet::globalmap_callback, this);
     initialpose_sub = nh.subscribe("/initialpose", 8, &HdlLocalizationNodelet::initialpose_callback, this);
 
-    pose_pub = nh.advertise<nav_msgs::Odometry>("/odom", 5, false);
+    initial_pose_request_pub = nh.advertise<std_msgs::Bool>("/request_init_pose", 5, true);
+    pose_pub = nh.advertise<nav_msgs::Odometry>("/hdl_odom", 5, false);
     aligned_pub = nh.advertise<sensor_msgs::PointCloud2>("/aligned_points", 5, false);
     status_pub = nh.advertise<ScanMatchingStatus>("/status", 5, false);
 
@@ -90,19 +92,19 @@ private:
     double ndt_resolution = private_nh.param<double>("ndt_resolution", 1.0);
 
     if(reg_method == "NDT_OMP") {
-      NODELET_INFO("NDT_OMP is selected");
+      //NODELET_INFO("NDT_OMP is selected");
       pclomp::NormalDistributionsTransform<PointT, PointT>::Ptr ndt(new pclomp::NormalDistributionsTransform<PointT, PointT>());
       ndt->setTransformationEpsilon(0.01);
       ndt->setResolution(ndt_resolution);
       if (ndt_neighbor_search_method == "DIRECT1") {
-        NODELET_INFO("search_method DIRECT1 is selected");
+        //NODELET_INFO("search_method DIRECT1 is selected");
         ndt->setNeighborhoodSearchMethod(pclomp::DIRECT1);
       } else if (ndt_neighbor_search_method == "DIRECT7") {
-        NODELET_INFO("search_method DIRECT7 is selected");
+        //NODELET_INFO("search_method DIRECT7 is selected");
         ndt->setNeighborhoodSearchMethod(pclomp::DIRECT7);
       } else {
         if (ndt_neighbor_search_method == "KDTREE") {
-          NODELET_INFO("search_method KDTREE is selected");
+          //NODELET_INFO("search_method KDTREE is selected");
         } else {
           NODELET_WARN("invalid search method was given");
           NODELET_WARN("default method is selected (KDTREE)");
@@ -111,7 +113,7 @@ private:
       }
       return ndt;
     } else if(reg_method.find("NDT_CUDA") != std::string::npos) {
-      NODELET_INFO("NDT_CUDA is selected");
+      // NODELET_INFO("NDT_CUDA is selected");
       boost::shared_ptr<fast_gicp::NDTCuda<PointT, PointT>> ndt(new fast_gicp::NDTCuda<PointT, PointT>);
       ndt->setResolution(ndt_resolution);
 
@@ -182,7 +184,7 @@ private:
    */
   void points_callback(const sensor_msgs::PointCloud2ConstPtr& points_msg) {
     if(!globalmap) {
-      NODELET_ERROR("globalmap has not been received!!");
+      // NODELET_ERROR("globalmap has not been received!!");
       return;
     }
 
@@ -219,7 +221,10 @@ private:
 
     std::lock_guard<std::mutex> estimator_lock(pose_estimator_mutex);
     if(!pose_estimator) {
-      NODELET_ERROR("waiting for initial pose input!!");
+      std_msgs::Bool bool_msg;
+      bool_msg.data = true;
+      initial_pose_request_pub.publish(bool_msg);
+      // NODELET_ERROR("waiting for initial pose input!!");
       return;
     }
     Eigen::Matrix4f before = pose_estimator->matrix();
@@ -265,7 +270,7 @@ private:
     auto aligned = pose_estimator->correct(stamp, filtered);
 
     if(aligned_pub.getNumSubscribers()) {
-      aligned->header.frame_id = "map";
+      aligned->header.frame_id = "hdl_map";
       aligned->header.stamp = cloud->header.stamp;
       aligned_pub.publish(aligned);
     }
@@ -398,7 +403,7 @@ private:
       geometry_msgs::TransformStamped map_wrt_frame = tf2::eigenToTransform(Eigen::Isometry3d(pose.inverse().cast<double>()));
       map_wrt_frame.header.stamp = stamp;
       map_wrt_frame.header.frame_id = odom_child_frame_id;
-      map_wrt_frame.child_frame_id = "map";
+      map_wrt_frame.child_frame_id = "hdl_map";
 
       geometry_msgs::TransformStamped frame_wrt_odom = tf_buffer.lookupTransform(robot_odom_frame_id, odom_child_frame_id, ros::Time(0), ros::Duration(0.1));
       Eigen::Matrix4f frame2odom = tf2::transformToEigen(frame_wrt_odom).cast<float>().matrix();
@@ -413,14 +418,14 @@ private:
       geometry_msgs::TransformStamped odom_trans;
       odom_trans.transform = tf2::toMsg(odom_wrt_map);
       odom_trans.header.stamp = stamp;
-      odom_trans.header.frame_id = "map";
+      odom_trans.header.frame_id = "hdl_map";
       odom_trans.child_frame_id = robot_odom_frame_id;
 
       tf_broadcaster.sendTransform(odom_trans);
     } else {
       geometry_msgs::TransformStamped odom_trans = tf2::eigenToTransform(Eigen::Isometry3d(pose.cast<double>()));
       odom_trans.header.stamp = stamp;
-      odom_trans.header.frame_id = "map";
+      odom_trans.header.frame_id = "hdl_map";
       odom_trans.child_frame_id = odom_child_frame_id;
       tf_broadcaster.sendTransform(odom_trans);
     }
@@ -428,7 +433,7 @@ private:
     // publish the transform
     nav_msgs::Odometry odom;
     odom.header.stamp = stamp;
-    odom.header.frame_id = "map";
+    odom.header.frame_id = "hdl_map";
 
     tf::poseEigenToMsg(Eigen::Isometry3d(pose.cast<double>()), odom.pose.pose);
     odom.child_frame_id = odom_child_frame_id;
@@ -517,6 +522,7 @@ private:
   ros::Subscriber globalmap_sub;
   ros::Subscriber initialpose_sub;
 
+  ros::Publisher initial_pose_request_pub;
   ros::Publisher pose_pub;
   ros::Publisher aligned_pub;
   ros::Publisher status_pub;

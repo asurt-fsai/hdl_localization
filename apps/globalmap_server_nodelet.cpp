@@ -7,6 +7,7 @@
 #include <tf/transform_broadcaster.h>
 
 #include <std_msgs/String.h>
+#include <std_msgs/Bool.h>
 #include <sensor_msgs/PointCloud2.h>
 
 #include <nodelet/nodelet.h>
@@ -26,17 +27,15 @@ public:
   }
 
   void onInit() override {
+    ROS_INFO_STREAM("GlobalmapServerNodelet::onInit()");
     nh = getNodeHandle();
     mt_nh = getMTNodeHandle();
     private_nh = getPrivateNodeHandle();
 
-    initialize_params();
 
     // publish globalmap with "latched" publisher
     globalmap_pub = nh.advertise<sensor_msgs::PointCloud2>("/globalmap", 5, true);
-    map_update_sub = nh.subscribe("/map_request/pcd", 10,              &GlobalmapServerNodelet::map_update_callback, this);
-
-    globalmap_pub_timer = nh.createWallTimer(ros::WallDuration(1.0), &GlobalmapServerNodelet::pub_once_cb, this, true, true);
+    map_update_sub = nh.subscribe("/map_request/pcd", 10, &GlobalmapServerNodelet::map_update_callback, this);
   }
 
 private:
@@ -44,8 +43,14 @@ private:
     // read globalmap from a pcd file
     std::string globalmap_pcd = private_nh.param<std::string>("globalmap_pcd", "");
     globalmap.reset(new pcl::PointCloud<PointT>());
+    while (done_first_lap == false)
+    {
+      ROS_INFO_STREAM("Waiting for first lap to finish...");
+    }
+    ROS_INFO_STREAM("First lap finished, loading global map...");
+    first_lap_sub.shutdown();
     pcl::io::loadPCDFile(globalmap_pcd, *globalmap);
-    globalmap->header.frame_id = "map";
+    globalmap->header.frame_id = "hdl_map";
 
     std::ifstream utm_file(globalmap_pcd + ".utm");
     if (utm_file.is_open() && private_nh.param<bool>("convert_utm_to_local", true)) {
@@ -72,16 +77,17 @@ private:
     globalmap = filtered;
   }
 
-  void pub_once_cb(const ros::WallTimerEvent& event) {
-    globalmap_pub.publish(globalmap);
-  }
+  void map_update_callback(const std_msgs::Bool &msg){
+    if(msg.data==false){
+      // ROS_INFO_STREAM("Received map request, but not updating map");
+      return;
+    }
 
-  void map_update_callback(const std_msgs::String &msg){
-    ROS_INFO_STREAM("Received map request, map path : "<< msg.data);
-    std::string globalmap_pcd = msg.data;
+    // ROS_INFO_STREAM("Received map request"<< msg.data);
+    std::string globalmap_pcd = private_nh.param<std::string>("globalmap_pcd", "");
     globalmap.reset(new pcl::PointCloud<PointT>());
     pcl::io::loadPCDFile(globalmap_pcd, *globalmap);
-    globalmap->header.frame_id = "map";
+    globalmap->header.frame_id = "hdl_map";
 
     // downsample globalmap
     double downsample_resolution = private_nh.param<double>("downsample_resolution", 0.1);
@@ -104,6 +110,8 @@ private:
 
   ros::Publisher globalmap_pub;
   ros::Subscriber map_update_sub;
+  ros::Subscriber first_lap_sub;
+  bool done_first_lap = false;
 
   ros::WallTimer globalmap_pub_timer;
   pcl::PointCloud<PointT>::Ptr globalmap;
